@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+. sentaku -n
+
+_SENTAKU_FILE_CONTENT_LINES=${_SENTAKU_FILE_CONTENT_LINES:-10}
+_SENTAKU_CONTENT_SHOW_UNDER=${_SENTAKU_CONTENT_SHOW_UNDER:-0}
+
+_s_file_content_lines=${SENTAKU_FILE_CONTENT_LINES:-$_SENTAKU_FILE_CONTENT_LINES}
+_s_content_show_under=${SENTAKU_CONTENT_SHOW_UNDER:-$_SENTAKU_CONTENT_SHOW_UNDER}
+
+_sf_file_content () {
+  if [ $_s_file_content -eq 0 ];then
+    return
+  fi
+  local i
+  local start_line=$((_s_lines+1))
+  local end_line=$(($(tput lines)-1))
+  local start_col=0
+  local n_cols=$_s_cols
+
+  if [ $_s_content_show_under -eq 0 ];then
+    start_line=0
+    start_col=$_s_cols
+    n_cols=$_s_content_cols
+  fi
+
+  for i in $(seq $start_line $end_line);do
+    tput cup "$i" "$start_col" >/dev/tty
+    printf "%-${n_cols}s" "" >/dev/tty
+  done
+
+  if [ $_s_content_show_under -eq 1 ];then
+    tput cup "$_s_lines" 0 >/dev/tty
+    if [ $n_cols -ge 20 ];then
+      printf "====File content===="
+    else
+      printf "=="
+    fi
+  fi
+
+  if ! file "${_s_inputs[$_s_current_n]}"|grep -q text;then
+    if [ $_s_content_show_under -eq 0 ];then
+      if [ $n_cols -ge 16 ];then
+        tput cup "$start_line" "$start_col" >/dev/tty
+        printf "|Not a text file"
+      fi
+    else
+      if [ $n_cols -ge 16 ];then
+        tput cup "$start_line" "$start_col" >/dev/tty
+        printf "Not a text file"
+      fi
+    fi
+  else
+    i=$start_line
+    while read line;do
+      if [ $_s_content_show_under -eq 0 ];then
+        line="|$line"
+      fi
+      if [ "${#line}" -gt "$n_cols" ];then
+        if [ "x$ZSH_VERSION" != "x" ];then
+          line="${line[0,$((n_cols-1))]}"
+        else
+          line="${line: 0: $n_cols}"
+        fi
+      fi
+      tput cup "$i" $start_col >/dev/tty
+      printf "%s" "$line"
+      ((i++))
+      if [ $i -gt $end_line ];then
+        break
+      fi
+    done < ${_s_inputs[$_s_current_n]}
+    while [ $i -lt $end_line ];do
+      tput cup "$i" $start_col >/dev/tty
+      printf "|"
+      ((i++))
+    done
+  fi
+}
+
+_sf_set_header () { # {{{
+  _s_header="\e[43;30m$_s_n values in total\e[0m "
+  if [ "$_s_noheader" = 1 ];then
+    return
+  fi
+  if [ $_s_delete -eq 1 ];then
+    local delete_key="d(delete), "
+  else
+    local delete_key=""
+  fi
+  if [ $_s_keymode -eq 0 ];then
+    if [ "$_s_cols" -ge 41 ];then
+      _s_header="$_s_header
+  vimike updown, e.g)j:down, k:up, gg/G,
+  s(show content by \$VISUAL)
+  ${delete_key}Enter/Space(select), q(quit)"
+    fi
+  else
+    if [ "$_s_cols" -ge 51 ];then
+      _s_header="$_s_header
+  C-n(down), C-j(up), C-v(Page down), M-v(Page up)
+  Enter(select), C-x(quit)
+  Other normal keys start an incremental search"
+    fi
+  fi
+}  # }}}
+
+_sf_setview () { # {{{
+  if [ $_s_content_show_under -eq 0 ];then
+    _s_file_content=1
+    local full_cols=$_s_cols
+    _s_cols=$((full_cols/2))
+    _s_content_cols=$((full_cols-_s_cols))
+  fi
+
+  if [ "$_s_lines" -le "$((_s_min_show))" ];then
+    _s_header=""
+    _s_ext_row=0
+  elif [ "$_s_lines" -eq "$((_s_min_show+1))" ];then
+    _s_header="${_s_search}"
+    _s_ext_row=1
+  else
+    _sf_set_header
+    _s_header="$(printf "%b\n\n" "$_s_header"|\
+                 sed -e :loop -e 'N; $!b loop'  -e 's/[[:space:]\n]*$//')\
+               \n${_s_search}"
+    if [ "$(printf "%b\n" "$_s_header"|grep -c ^)" -gt "$((_s_lines-_s_min_show))" ];then
+      _s_header="\e[43;30m$_s_n values in total\e[0m\n${_s_search}"
+    fi
+    _s_ext_row=$(printf "%b\n" "$_s_header"|grep -c ^)
+  fi
+
+  if [ $_s_content_show_under -eq 1 ];then
+    if [ $((_s_lines-_ext_row-_s_file_content_lines-1)) -ge 0 ];then
+      _s_lines=$((_s_lines-_s_file_content_lines-1))
+      _s_file_content=1
+    else
+      _s_file_content=0
+    fi
+  fi
+
+  _s_max_show=$_s_n
+  if [ "$_s_n" -gt $((_s_lines-_s_ext_row)) ];then
+    _s_max_show=$((_s_lines-_s_ext_row))
+  fi
+} # }}}
+
+_sf_print_current_line () { # print current line {{{
+  local cursor_r=$((_s_current_n-_s_n_offset+_s_ext_row))
+  _sf_printline 1 $cursor_r $_s_current_n
+  _sf_file_content
+} # }}}
+
+_sf_s () {
+  if [ ! -f ${_s_inputs[$_s_current_n]} ];then
+    output="$(_sf_nth $((_s_current_n))) value: ${_s_inputs[$_s_current_n]}
+===============
+Not a file.
+"
+    _sf_echo "$output"
+  else
+    clear >/dev/tty
+    ${VISUAL:-less} "${_s_inputs[$_s_current_n]}" >/dev/tty </dev/tty
+    _s_is_print=1
+  fi
+}
+
+if echo -- "$1"|grep -q -- "--under";then
+  _s_content_show_under=1
+  shift
+fi
+if echo -- "$1"|grep -q -- "--right";then
+  _s_content_show_under=0
+  shift
+fi
+if [ -p /dev/stdin ];then
+  echo $(cat -) | _sf_main "$@"
+else
+  _sf_main "$@" $(ls)
+fi
